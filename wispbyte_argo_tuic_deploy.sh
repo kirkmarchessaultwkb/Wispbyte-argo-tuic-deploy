@@ -1,108 +1,97 @@
 #!/usr/bin/env bash
-# wispbyte-argo-tuic-deploy.sh
-# 一键在 Wispbyte（或类似 PaaS）上部署：KeepAlive Web + Cloudflare Argo（临时/固定） + TUIC。
-# 用途：自托管开发/远程访问环境演示。请遵守法律与平台条款。
+set -e
 
-set -euo pipefail
-IFS=$'\n\t'
+# ✅ Detect container home
+HOME_DIR="${HOME:-/home/container}"
+cd "$HOME_DIR"
 
-# -------- configuration --------
-: ${PORT:=${PORT:-}}
-: ${CF_TOKEN:="eyJhIjoiOThhZmI1Zjg4YzQ5ZWNkMDYxZmI5ZTBhNDY0OTYyOGYiLCJ0IjoiYmUyNzEzMDgtYWJiZi00NzJlLWIwZjItNDUyMzQxZmVlODYyIiwicyI6Ik9ERXdNV0psTVdVdFpqZGhPUzAwTnpobUxUaGpZMkV0TVdFeE1HSmxPREZoT1RVNCJ9"}
-: ${CF_DOMAIN:="wisp.xunda.ggff.net"}  # 固定隧道域名
-: ${UUID:="77ef1ada-606c-46a5-8880-b79a23d3ae7a"}  # ✨新增：节点 UUID
-: ${TUIC_TOKEN:="tuic_token_generate_here"}
-: ${TUIC_PORT:=5000}
-: ${KEEPALIVE_PORT:=${PORT:-14378}}
-: ${WORKDIR:="/root/argo-tuic"}
+echo ">> Working directory: $HOME_DIR"
 
-mkdir -p "$WORKDIR"
-cd "$WORKDIR"
+# ✅ Required ENV vars (Wispbyte panel passes these)
+UUID="${UUID:-$(cat /proc/sys/kernel/random/uuid)}"
+CF_TOKEN="${CF_TOKEN:-}"
+CF_TUNNEL_ID="${CF_TUNNEL_ID:-}"
+CF_TUNNEL_SECRET="${CF_TUNNEL_SECRET:-}"
+CF_DOMAIN="${CF_DOMAIN:-}"
+TUIC_PASS="${TUIC_PASS:-$(openssl rand -hex 8)}"
+PORT="${PORT:-3000}"
 
-info(){ printf "[INFO] %s\n" "$*"; }
-warn(){ printf "[WARN] %s\n" "$*"; }
+echo "UUID = $UUID"
+echo "TUIC Password = $TUIC_PASS"
+echo "PORT = $PORT"
 
-# Detect PORT
-if [ -z "${PORT:-}" ]; then
-  if [ -f /proc/1/environ ]; then
-    PORT=$(tr '\0' '\n' </proc/1/environ | awk -F= '/^PORT=/ {print $2; exit}') || true
-  fi
-  PORT=${PORT:-$KEEPALIVE_PORT}
-fi
-info "Using PORT=$PORT"
+mkdir -p "$HOME_DIR/.argo"
+mkdir -p "$HOME_DIR/tuic"
+mkdir -p "$HOME_DIR/node"
 
-# Detect arch
-_arch=$(uname -m)
-case "$_arch" in
-  x86_64|amd64) ARCH=amd64 ;;
-  aarch64|arm64) ARCH=arm64 ;;
-  armv7*|armv6*) ARCH=armv6 ;;
-  *) ARCH=amd64 ;;
-esac
-info "Arch: $_arch -> $ARCH"
+# ✅ Save Argo creds (Pterodactyl safe)
+echo "$CF_TUNNEL_SECRET" > "$HOME_DIR/.argo/tunnel-secret.json"
 
-download(){
-  local url="$1" dest="$2"
-  curl -fsSL "$url" -o "$dest" || wget -qO "$dest" "$url"
-  chmod +x "$dest"
-}
-
-# Install cloudflared
-CF_BIN="$WORKDIR/cloudflared"
-if [ ! -f "$CF_BIN" ]; then
-  info "Installing cloudflared..."
-  case "$ARCH" in
-    amd64) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" ;;
-    arm64) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" ;;
-    armv6) CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm" ;;
-  esac
-  download "$CF_URL" "$CF_BIN"
-fi
-
-# Keepalive web
-KEEP_PID_FILE="$WORKDIR/keepalive.pid"
-nohup python3 -m http.server $PORT --bind 0.0.0.0 >/dev/null 2>&1 & echo $! > "$KEEP_PID_FILE"
-
-# TUIC installer
-info "Installing TUIC..."
-bash -c "curl -Ls https://raw.githubusercontent.com/eishare/tuic-hy2-node.js-python/main/tuic.sh | sed 's/\r$//' | bash -s -- --noninteractive" || warn "TUIC installer error"
-
-# nodejs-argo
-info "Installing nodejs-argo..."
-if [ ! -d "$WORKDIR/nodejs-argo" ]; then
-  git clone https://github.com/eooce/nodejs-argo.git "$WORKDIR/nodejs-argo" || true
-fi
-cd "$WORKDIR/nodejs-argo"
-npm install --production || true
-
-# ✅ 写入 .env，包括 UUID
-cat > .env <<EOF
-PORT=$PORT
-ARGO_DOMAIN=${CF_DOMAIN}
-ARGO_AUTH=
-UUID=${UUID}
+cat > "$HOME_DIR/.argo/tunnel.json" <<EOF
+{"AccountTag":"","TunnelSecret":"$CF_TUNNEL_SECRET","TunnelID":"$CF_TUNNEL_ID"}
 EOF
 
-# Run node
-nohup node index.js >/dev/null 2>&1 & echo $! > "$WORKDIR/nodejs-argo.pid"
+# ✅ Download Argo binary
+curl -Lo cloudflared.tgz https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.tgz
+tar -xvf cloudflared.tgz
+mv cloudflared "$HOME_DIR/cloudflared"
+chmod +x "$HOME_DIR/cloudflared"
 
-# cloudflared
-nohup "$CF_BIN" tunnel --url "http://127.0.0.1:$PORT" --no-autoupdate >/dev/null 2>&1 & echo $! > "$WORKDIR/cloudflared.pid"
+# ✅ Start Argo (background)
+nohup "$HOME_DIR/cloudflared" tunnel --no-autoupdate --config "$HOME_DIR/.argo/tunnel.json" run "$CF_TUNNEL_ID" >/dev/null 2>&1 &
 
-cd "$WORKDIR"
+# ✅ Install TUIC binary
+curl -Lo tuic.tar.gz https://github.com/EAimTY/tuic/releases/latest/download/tuic-server-x86_64-unknown-linux-gnu.tar.gz
+tar -xvf tuic.tar.gz -C tuic
+chmod +x tuic/*
 
-echo "
-✅ 部署完成！
+# ✅ TUIC server config
+cat > "$HOME_DIR/tuic/tuic.json" <<EOF
+{
+ "server": "0.0.0.0:443",
+ "uuid": "$UUID",
+ "password": "$TUIC_PASS",
+ "alpn": ["h3"],
+ "congestion_control": "bbr"
+}
+EOF
 
-UUID: $UUID
-域名: $CF_DOMAIN
+# ✅ Start TUIC
+nohup "$HOME_DIR/tuic/tuic-server" -c "$HOME_DIR/tuic/tuic.json" >/dev/null 2>&1 &
 
-进程状态:
- - Web: $(cat "$KEEP_PID_FILE")
- - Argo: $(cat "$WORKDIR/cloudflared.pid")
- - NodeJS: $(cat "$WORKDIR/nodejs-argo.pid")
+# ✅ Node app index file
+cat > "$HOME_DIR/node/index.js" <<EOF
+import express from "express";
+const app = express();
 
-日志目录: $WORKDIR
-若需要固定隧道 DNS，请在 Cloudflare 面板手动添加 CNAME。
-"
-exit 0
+const UUID = "$UUID";
+
+app.get("/sub", (req, res) => {
+ const config = \`vmess://\${Buffer.from(JSON.stringify({
+   v: "2",
+   ps: "Argo-TUIC",
+   add: "$CF_DOMAIN",
+   port: "443",
+   id: UUID,
+   aid: "0",
+   net: "ws",
+   type: "none",
+   host: "$CF_DOMAIN",
+   path: "/"
+ })).toString('base64')}\`;
+
+ res.send(config);
+});
+
+app.listen($PORT);
+console.log("Node Argo+TUIC running on port $PORT");
+EOF
+
+# ✅ Start Node
+npm init -y >/dev/null 2>&1
+npm install express >/dev/null 2>&1
+nohup node "$HOME_DIR/node/index.js" >/dev/null 2>&1 &
+
+echo "✅ Deployment completed"
+echo "订阅链接: https://$CF_DOMAIN/sub"
+
