@@ -11,8 +11,8 @@ IFS=$'\n\t'
 
 # -------- configuration (可在运行前通过 export 设置) --------
 : ${PORT:=${PORT:-}}        # Wispbyte 平台会在环境中注入 PORT，脚本会自动读取
-: ${CF_TOKEN:=""}         # 若要固定域名，请设置此处为你的 Cloudflare API token（带 permutations）
-: ${CF_DOMAIN:=""}        # 若要固定域名，请设置为你的域名，如 dev.example.com
+: ${CF_TOKEN:="eyJhIjoiOThhZmI1Zjg4YzQ5ZWNkMDYxZmI5ZTBhNDY0OTYyOGYiLCJ0IjoiYmUyNzEzMDgtYWJiZi00NzJlLWIwZjItNDUyMzQxZmVlODYyIiwicyI6Ik9ERXdNV0psTVdVdFpqZGhPUzAwTnpobUxUaGpZMkV0TVdFeE1HSmxPREZoT1RVNCJ9"}         # 若要固定域名，请设置此处为你的 Cloudflare API token（带 permutations）
+: ${CF_DOMAIN:="wisp.xunda.ggff.net"}        # 若要固定域名，请设置为你的域名，如 dev.example.com
 : ${TUIC_TOKEN:="tuic_token_generate_here"}
 : ${TUIC_PORT:=5000}        # TUIC 本地监听端口（内部，不一定对公网开放）
 : ${KEEPALIVE_PORT:=${PORT:-14378}} # 如果没有 PORT 环境变量，保底使用 14378
